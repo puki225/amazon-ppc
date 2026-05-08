@@ -322,6 +322,8 @@ app.get("/ppc/keywords", requireApiKey, async (req, res) => {
       method: "POST",
       path: "/sp/keywords/list",
       bodyObj: body,
+      version: "v2",
+      contentType: "application/vnd.spKeyword.v3+json",
     });
 
     // Return the keywords array directly for easy consumption
