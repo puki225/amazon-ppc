@@ -409,45 +409,89 @@ app.post("/ppc/keywords/negatives", requireApiKey, async (req, res) => {
 });
 
 // =====================
-// ROUTES — REPORTS
-// Reports are async in Amazon Ads API:
-//   1. POST /ppc/reports/request  → get reportId
-//   2. GET  /ppc/reports/:id      → poll until status = "SUCCESS"
-//   3. GET  /ppc/reports/:id/download → fetch the gzipped data
+// ROUTES — REPORTS (v3 API)
+// Amazon Ads reporting v3 — all reports use /reporting/reports
+// v2 was deprecated March 2023 for SP, Oct 2024 for all others
 //
-// Report types: campaigns | adGroups | keywords | searchTerms | targets
+// Flow:
+//   1. POST /ppc/reports/request  → get reportId
+//   2. GET  /ppc/reports/:id      → poll until status = "COMPLETED"
+//   3. GET  /ppc/reports/:id/download → fetch + return the gzipped data
+//
+// reportType options: keywords | searchTerms | campaigns
 // =====================
+
+// Column definitions per report type
+const V3_REPORT_CONFIG = {
+  keywords: {
+    adProduct: "SPONSORED_PRODUCTS",
+    groupBy: ["keyword"],
+    columns: [
+      "campaignId", "campaignName", "adGroupId", "adGroupName",
+      "keywordId", "keyword", "keywordType", "matchType",
+      "impressions", "clicks", "cost",
+      "purchases14d", "sales14d", "purchasesPromotedASINs14d"
+    ],
+  },
+  searchTerms: {
+    adProduct: "SPONSORED_PRODUCTS",
+    groupBy: ["searchTerm"],
+    columns: [
+      "campaignId", "campaignName", "adGroupId", "adGroupName",
+      "keywordId", "keyword", "matchType", "searchTerm",
+      "impressions", "clicks", "cost",
+      "purchases14d", "sales14d"
+    ],
+  },
+  campaigns: {
+    adProduct: "SPONSORED_PRODUCTS",
+    groupBy: ["campaign"],
+    columns: [
+      "campaignId", "campaignName", "campaignStatus",
+      "campaignBudgetAmount", "campaignBudgetType",
+      "impressions", "clicks", "cost",
+      "purchases14d", "sales14d"
+    ],
+  },
+};
+
 app.post("/ppc/reports/request", requireApiKey, async (req, res) => {
   try {
     assertEnv();
 
-    const {
-      reportType = "keywords",
-      startDate,
-      endDate,
-      metrics,
-    } = req.body;
+    const { reportType = "keywords", startDate, endDate } = req.body;
 
+    // startDate/endDate in YYYYMMDD → convert to YYYY-MM-DD for v3
     if (!startDate || !endDate) {
       return res.status(400).json({ ok: false, error: "startDate and endDate required (YYYYMMDD)" });
     }
 
-    const defaultMetrics = {
-      keywords:    "campaignId,campaignName,adGroupId,keywordId,keywordText,matchType,impressions,clicks,cost,attributedSales14d,attributedConversions14d",
-      searchTerms: "campaignId,campaignName,adGroupId,keywordId,query,impressions,clicks,cost,attributedSales14d,attributedConversions14d",
-      campaigns:   "campaignId,campaignName,impressions,clicks,cost,attributedSales14d,attributedConversions14d",
-    };
+    const fmt = d => `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+
+    const config = V3_REPORT_CONFIG[reportType];
+    if (!config) {
+      return res.status(400).json({ ok: false, error: `Unknown reportType: ${reportType}. Use keywords | searchTerms | campaigns` });
+    }
 
     const payload = {
-      reportDate: endDate,
-      metrics: metrics || defaultMetrics[reportType] || defaultMetrics.keywords,
-      // For date range reports use the v3 reporting API (see /ppc/reports/request-v3)
+      name: `${reportType}-${startDate}-${endDate}`,
+      startDate: fmt(startDate),
+      endDate: fmt(endDate),
+      configuration: {
+        adProduct: config.adProduct,
+        groupBy: config.groupBy,
+        columns: config.columns,
+        reportTypeId: `sp${reportType.charAt(0).toUpperCase() + reportType.slice(1)}`,
+        timeUnit: "SUMMARY",
+        format: "GZIP_JSON",
+      },
     };
 
     const result = await adsRequest({
       method: "POST",
-      path: `/${reportType}/report`,
+      path: "/reporting/reports",
       bodyObj: payload,
+      version: "v2", // v3 reporting endpoint lives under /v2/reporting/reports
     });
 
     res.json({ ok: true, version: VERSION_STAMP, reportType, ...result });
@@ -463,7 +507,11 @@ app.get("/ppc/reports/:reportId", requireApiKey, async (req, res) => {
   try {
     assertEnv();
     const { reportId } = req.params;
-    const result = await adsRequest({ method: "GET", path: `/reports/${reportId}` });
+    const result = await adsRequest({
+      method: "GET",
+      path: `/reporting/reports/${reportId}`,
+      version: "v2",
+    });
     res.json({ ok: true, version: VERSION_STAMP, ...result });
   } catch (err) {
     res.status(err?.status || 500).json({
@@ -477,11 +525,16 @@ app.get("/ppc/reports/:reportId/download", requireApiKey, async (req, res) => {
   try {
     assertEnv();
 
-    // First get the report status to find the download URL
-    const statusResult = await adsRequest({ method: "GET", path: `/reports/${req.params.reportId}` });
-    const { status, location } = statusResult.json;
+    // Get report status + download URL
+    const statusResult = await adsRequest({
+      method: "GET",
+      path: `/reporting/reports/${req.params.reportId}`,
+      version: "v2",
+    });
 
-    if (status !== "SUCCESS") {
+    const { status, url } = statusResult.json;
+
+    if (status !== "COMPLETED") {
       return res.status(202).json({
         ok: false,
         error: `Report not ready. Status: ${status}`,
@@ -489,13 +542,12 @@ app.get("/ppc/reports/:reportId/download", requireApiKey, async (req, res) => {
       });
     }
 
-    // Download the gzipped report from the S3 location (no auth needed)
-    const dlResp = await fetch(location);
+    // Download from S3 — no auth needed
+    const dlResp = await fetch(url);
     if (!dlResp.ok) {
-      return res.status(502).json({ ok: false, error: `Failed to download report from S3: ${dlResp.status}` });
+      return res.status(502).json({ ok: false, error: `Failed to download report: ${dlResp.status}` });
     }
 
-    // Stream it back — caller can decompress (gzip)
     res.setHeader("Content-Type", "application/octet-stream");
     res.setHeader("Content-Encoding", "gzip");
     res.setHeader("X-Report-Id", req.params.reportId);
