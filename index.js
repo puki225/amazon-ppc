@@ -308,14 +308,25 @@ app.put("/ppc/campaigns/budgets", requireApiKey, async (req, res) => {
 app.get("/ppc/keywords", requireApiKey, async (req, res) => {
   try {
     assertEnv();
-    const { campaignId, adGroupId, state = "enabled" } = req.query;
+    const { campaignId, adGroupId } = req.query;
 
-    let path = `/keywords?state=${state}&count=100`;
-    if (campaignId) path += `&campaignIdFilter=${campaignId}`;
-    if (adGroupId) path += `&adGroupIdFilter=${adGroupId}`;
+    // SP API v3 — list keywords via POST with filter body
+    const body = {
+      stateFilter: { include: ["ENABLED"] },
+      maxResults: 500,
+    };
+    if (campaignId) body.campaignIdFilter = { include: [String(campaignId)] };
+    if (adGroupId) body.adGroupIdFilter = { include: [String(adGroupId)] };
 
-    const result = await adsRequest({ method: "GET", path });
-    res.json({ ok: true, version: VERSION_STAMP, ...result });
+    const result = await adsRequest({
+      method: "POST",
+      path: "/sp/keywords/list",
+      bodyObj: body,
+    });
+
+    // Return the keywords array directly for easy consumption
+    const keywords = result.json?.keywords || result.json || [];
+    res.json({ ok: true, version: VERSION_STAMP, count: keywords.length, json: keywords });
   } catch (err) {
     res.status(err?.status || 500).json({
       ok: false, version: VERSION_STAMP,
