@@ -409,6 +409,72 @@ app.post("/ppc/keywords/negatives", requireApiKey, async (req, res) => {
 });
 
 // =====================
+// POST /ppc/keywords
+// Add new keywords to a campaign/ad group (used for keyword harvesting)
+// Expected body: array of { campaignId, adGroupId, keywordText, matchType, bid, reason }
+// matchType: BROAD | PHRASE | EXACT
+// =====================
+app.post("/ppc/keywords", requireApiKey, async (req, res) => {
+  try {
+    assertEnv();
+
+    const keywords = req.body;
+    if (!Array.isArray(keywords) || keywords.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "Body must be a non-empty array of { campaignId, adGroupId, keywordText, matchType, bid, reason }",
+      });
+    }
+
+    // Validate required fields
+    const invalid = keywords.filter(k => !k.campaignId || !k.adGroupId || !k.keywordText || !k.matchType || !k.bid);
+    if (invalid.length > 0) {
+      return res.status(400).json({
+        ok: false,
+        error: `${invalid.length} keyword(s) missing required fields (campaignId, adGroupId, keywordText, matchType, bid)`,
+        invalid,
+      });
+    }
+
+    // Safety check — never bid above £5 on a new keyword
+    const overBid = keywords.filter(k => parseFloat(k.bid) > 5);
+    if (overBid.length > 0) {
+      return res.status(400).json({
+        ok: false,
+        error: `${overBid.length} keyword(s) have bids above £5 safety limit`,
+        overBid,
+      });
+    }
+
+    const payload = keywords.map(k => ({
+      campaignId: k.campaignId,
+      adGroupId: k.adGroupId,
+      keywordText: k.keywordText,
+      matchType: k.matchType.toUpperCase(),
+      bid: parseFloat(parseFloat(k.bid).toFixed(2)),
+      state: "enabled",
+    }));
+
+    if (IS_DRY_RUN) {
+      return res.json(dryRunResponse("add_keywords", payload));
+    }
+
+    const result = await adsRequest({
+      method: "POST",
+      path: "/keywords",
+      bodyObj: payload,
+    });
+
+    res.json({ ok: true, version: VERSION_STAMP, added: keywords.length, ...result });
+  } catch (err) {
+    res.status(err?.status || 500).json({
+      ok: false, version: VERSION_STAMP,
+      error: err?.message || String(err), details: err?.adsApi,
+    });
+  }
+});
+
+// =====================
 // ROUTES — REPORTS (v3 API)
 // Amazon Ads reporting v3 — all reports use /reporting/reports
 // v2 was deprecated March 2023 for SP, Oct 2024 for all others
