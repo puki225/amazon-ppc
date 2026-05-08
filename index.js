@@ -422,35 +422,43 @@ app.post("/ppc/keywords/negatives", requireApiKey, async (req, res) => {
 // =====================
 
 // Column definitions per report type
+// Reference: Amazon Ads API v3 reporting docs
 const V3_REPORT_CONFIG = {
   keywords: {
     adProduct: "SPONSORED_PRODUCTS",
-    groupBy: ["keyword"],
+    reportTypeId: "spTargeting",
+    groupBy: ["targeting"],
     columns: [
-      "campaignId", "campaignName", "adGroupId", "adGroupName",
-      "keywordId", "keyword", "keywordType", "matchType",
+      "campaignId", "adGroupId", "keywordId", "keyword", "matchType",
       "impressions", "clicks", "cost",
-      "purchases14d", "sales14d", "purchasesPromotedASINs14d"
+      "purchases14d", "sales14d",
+      "startDate", "endDate"
+    ],
+    filters: [
+      { field: "keywordType", values: ["BROAD", "PHRASE", "EXACT"] }
     ],
   },
   searchTerms: {
     adProduct: "SPONSORED_PRODUCTS",
+    reportTypeId: "spSearchTerm",
     groupBy: ["searchTerm"],
     columns: [
-      "campaignId", "campaignName", "adGroupId", "adGroupName",
-      "keywordId", "keyword", "matchType", "searchTerm",
+      "campaignId", "adGroupId", "keywordId", "keyword", "matchType", "searchTerm",
       "impressions", "clicks", "cost",
-      "purchases14d", "sales14d"
+      "purchases14d", "sales14d",
+      "startDate", "endDate"
     ],
   },
   campaigns: {
     adProduct: "SPONSORED_PRODUCTS",
+    reportTypeId: "spCampaigns",
     groupBy: ["campaign"],
     columns: [
-      "campaignId", "campaignName", "campaignStatus",
+      "campaignId", "campaignStatus",
       "campaignBudgetAmount", "campaignBudgetType",
       "impressions", "clicks", "cost",
-      "purchases14d", "sales14d"
+      "purchases14d", "sales14d",
+      "startDate", "endDate"
     ],
   },
 };
@@ -481,9 +489,10 @@ app.post("/ppc/reports/request", requireApiKey, async (req, res) => {
         adProduct: config.adProduct,
         groupBy: config.groupBy,
         columns: config.columns,
-        reportTypeId: `sp${reportType.charAt(0).toUpperCase() + reportType.slice(1)}`,
+        reportTypeId: config.reportTypeId,
         timeUnit: "SUMMARY",
         format: "GZIP_JSON",
+        ...(config.filters ? { filters: config.filters } : {}),
       },
     };
 
