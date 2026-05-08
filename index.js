@@ -115,10 +115,10 @@ async function getLwaAccessToken() {
 // ADS API REQUEST
 // — Much simpler than SP-API: bearer token + profile header, no AWS signing
 // =====================
-async function adsRequest({ method, path, bodyObj, version = "v2" }) {
+async function adsRequest({ method, path, bodyObj, version = "v2", noVersion = false, contentType = "application/json" }) {
   const lwaToken = await getLwaAccessToken();
 
-  const url = `https://${ADS_HOST}/${version}${path}`;
+  const url = noVersion ? `https://${ADS_HOST}${path}` : `https://${ADS_HOST}/${version}${path}`;
   const payloadString = bodyObj === undefined ? undefined : JSON.stringify(bodyObj);
 
   const headers = {
@@ -126,7 +126,7 @@ async function adsRequest({ method, path, bodyObj, version = "v2" }) {
     "Amazon-Advertising-API-ClientId": LWA_CLIENT_ID,
     "Amazon-Advertising-API-Scope": ADS_PROFILE_ID,
     "Accept": "application/json",
-    ...(payloadString ? { "Content-Type": "application/json" } : {}),
+    ...(payloadString ? { "Content-Type": contentType } : {}),
   };
 
   const resp = await fetch(url, {
@@ -489,7 +489,7 @@ app.post("/ppc/reports/request", requireApiKey, async (req, res) => {
 
     const result = await adsRequest({
       method: "POST",
-      path: "/reporting/reports",
+      path: "/reporting/reports", noVersion: true, contentType: "application/vnd.createasyncreportrequest.v3+json",
       bodyObj: payload,
       version: "v2", // v3 reporting endpoint lives under /v2/reporting/reports
     });
@@ -509,7 +509,7 @@ app.get("/ppc/reports/:reportId", requireApiKey, async (req, res) => {
     const { reportId } = req.params;
     const result = await adsRequest({
       method: "GET",
-      path: `/reporting/reports/${reportId}`,
+      path: `/reporting/reports/${reportId}`, noVersion: true,
       version: "v2",
     });
     res.json({ ok: true, version: VERSION_STAMP, ...result });
@@ -528,7 +528,7 @@ app.get("/ppc/reports/:reportId/download", requireApiKey, async (req, res) => {
     // Get report status + download URL
     const statusResult = await adsRequest({
       method: "GET",
-      path: `/reporting/reports/${req.params.reportId}`,
+      path: `/reporting/reports/${req.params.reportId}`, noVersion: true,
       version: "v2",
     });
 
