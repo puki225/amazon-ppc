@@ -557,12 +557,29 @@ app.get("/ppc/reports/:reportId/download", requireApiKey, async (req, res) => {
       return res.status(502).json({ ok: false, error: `Failed to download report: ${dlResp.status}` });
     }
 
-    res.setHeader("Content-Type", "application/octet-stream");
-    res.setHeader("Content-Encoding", "gzip");
-    res.setHeader("X-Report-Id", req.params.reportId);
-
+    // Decompress gzip in the proxy — returns plain JSON so n8n needs no zlib
+    const { createGunzip } = await import('zlib');
     const buffer = await dlResp.arrayBuffer();
-    res.send(Buffer.from(buffer));
+    const compressed = Buffer.from(buffer);
+
+    const decompressed = await new Promise((resolve, reject) => {
+      const gunzip = createGunzip();
+      const chunks = [];
+      gunzip.on('data', chunk => chunks.push(chunk));
+      gunzip.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      gunzip.on('error', reject);
+      gunzip.end(compressed);
+    });
+
+    const rows = JSON.parse(decompressed);
+
+    res.json({
+      ok: true,
+      version: VERSION_STAMP,
+      reportId: req.params.reportId,
+      rowCount: rows.length,
+      rows,
+    });
   } catch (err) {
     res.status(err?.status || 500).json({
       ok: false, version: VERSION_STAMP,
