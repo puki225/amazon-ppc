@@ -151,6 +151,49 @@ async function adsRequest({ method, path, bodyObj, version = "v2" }) {
 }
 
 // =====================
+// OAUTH CALLBACK
+// — Catches the redirect from Amazon and displays the auth code clearly
+// — Visit this URL in browser after authorizing
+// =====================
+app.get("/oauth/callback", (req, res) => {
+  const { code, error, error_description } = req.query;
+
+  if (error) {
+    return res.send(`
+      <h2 style="color:red">Authorization Error</h2>
+      <p><strong>Error:</strong> ${error}</p>
+      <p><strong>Description:</strong> ${error_description}</p>
+    `);
+  }
+
+  if (!code) {
+    return res.send(`<h2 style="color:red">No code received</h2>`);
+  }
+
+  res.send(`
+    <html>
+    <body style="font-family:monospace;padding:40px;background:#f5f5f5">
+      <h2 style="color:green">✅ Authorization successful</h2>
+      <p>Copy the code below and exchange it for a refresh token.</p>
+      <p><strong>⚠️ This code expires in 5 minutes.</strong></p>
+      <div style="background:#fff;border:2px solid #333;padding:20px;font-size:18px;word-break:break-all;margin:20px 0">
+        ${code}
+      </div>
+      <p>Now run this in your terminal:</p>
+      <div style="background:#222;color:#0f0;padding:20px;font-size:13px;word-break:break-all">
+        curl -X POST https://api.amazon.com/auth/o2/token \\<br>
+        &nbsp;-d "grant_type=authorization_code" \\<br>
+        &nbsp;-d "code=${code}" \\<br>
+        &nbsp;-d "redirect_uri=https://amazon-ppc-production-51f5.up.railway.app/oauth/callback" \\<br>
+        &nbsp;-d "client_id=${LWA_CLIENT_ID}" \\<br>
+        &nbsp;-d "client_secret=${LWA_CLIENT_SECRET}"
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+// =====================
 // ROUTES — INFO
 // =====================
 app.get("/health", (req, res) =>
