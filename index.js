@@ -349,7 +349,7 @@ app.put("/ppc/keywords/bids", requireApiKey, async (req, res) => {
 
     // Safety check — reject any bid update on a keyword above target ACoS that increases the bid
     const violations = updates.filter(u =>
-      u.acos > TARGET_ACOS_NUM && parseFloat(u.newBid) > parseFloat(u.currentBid)
+      (u.acos / 100) > TARGET_ACOS_NUM && parseFloat(u.newBid) > parseFloat(u.currentBid)
     );
 
     if (violations.length > 0) {
