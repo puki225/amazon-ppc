@@ -361,8 +361,9 @@ app.put("/ppc/keywords/bids", requireApiKey, async (req, res) => {
     }
 
     const payload = updates.map(u => ({
-      keywordId: u.keywordId,
-      bid: parseFloat(u.newBid),
+      keywordId: String(u.keywordId),
+      bid: { value: parseFloat(u.newBid), currencyCode: "GBP" },
+      state: "ENABLED",
     }));
 
     if (IS_DRY_RUN) {
@@ -371,8 +372,10 @@ app.put("/ppc/keywords/bids", requireApiKey, async (req, res) => {
 
     const result = await adsRequest({
       method: "PUT",
-      path: "/keywords",
+      path: "/sp/keywords",
       bodyObj: payload,
+      version: "v2",
+      contentType: "application/vnd.spKeyword.v3+json",
     });
 
     res.json({ ok: true, version: VERSION_STAMP, applied: updates.length, ...result });
