@@ -281,8 +281,11 @@ app.put("/ppc/campaigns/budgets", requireApiKey, async (req, res) => {
     }
 
     const payload = updates.map(u => ({
-      campaignId: u.campaignId,
-      dailyBudget: parseFloat(u.newBudget),
+      campaignId: String(u.campaignId),
+      budget: {
+        budgetType: "DAILY_BUDGET",
+        budget: parseFloat(u.newBudget),
+      },
     }));
 
     if (IS_DRY_RUN) {
@@ -291,8 +294,11 @@ app.put("/ppc/campaigns/budgets", requireApiKey, async (req, res) => {
 
     const result = await adsRequest({
       method: "PUT",
-      path: "/campaigns",
-      bodyObj: payload,
+      path: "/sp/campaigns",
+      bodyObj: { campaigns: payload },
+      noVersion: true,
+      contentType: "application/vnd.spCampaign.v3+json",
+      acceptType: "application/vnd.spCampaign.v3+json",
     });
 
     res.json({ ok: true, version: VERSION_STAMP, applied: updates.length, ...result });
@@ -327,8 +333,9 @@ app.get("/ppc/keywords", requireApiKey, async (req, res) => {
       method: "POST",
       path: "/sp/keywords/list",
       bodyObj: body,
-      version: "v2",
+      noVersion: true,
       contentType: "application/vnd.spKeyword.v3+json",
+      acceptType: "application/vnd.spKeyword.v3+json",
     });
 
     // Return the keywords array directly for easy consumption
