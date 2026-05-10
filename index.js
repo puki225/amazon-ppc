@@ -378,7 +378,7 @@ app.put("/ppc/keywords/bids", requireApiKey, async (req, res) => {
       method: "PUT",
       path: "/sp/keywords",
       bodyObj: { keywords: payload.map(p => ({ keywordId: String(p.keywordId), bid: p.bid, state: "ENABLED" })) },
-      version: "v2",
+      noVersion: true,
       contentType: "application/vnd.spKeyword.v3+json",
       acceptType: "application/vnd.spKeyword.v3+json",
     });
