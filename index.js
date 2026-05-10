@@ -115,7 +115,7 @@ async function getLwaAccessToken() {
 // ADS API REQUEST
 // — Much simpler than SP-API: bearer token + profile header, no AWS signing
 // =====================
-async function adsRequest({ method, path, bodyObj, version = "v2", noVersion = false, contentType = "application/json" }) {
+async function adsRequest({ method, path, bodyObj, version = "v2", noVersion = false, contentType = "application/json", acceptType = "application/json" }) {
   const lwaToken = await getLwaAccessToken();
 
   const url = noVersion ? `https://${ADS_HOST}${path}` : `https://${ADS_HOST}/${version}${path}`;
@@ -125,7 +125,7 @@ async function adsRequest({ method, path, bodyObj, version = "v2", noVersion = f
     "Authorization": `Bearer ${lwaToken}`,
     "Amazon-Advertising-API-ClientId": LWA_CLIENT_ID,
     "Amazon-Advertising-API-Scope": ADS_PROFILE_ID,
-    "Accept": "application/json",
+    "Accept": acceptType,
     ...(payloadString ? { "Content-Type": contentType } : {}),
   };
 
@@ -373,9 +373,10 @@ app.put("/ppc/keywords/bids", requireApiKey, async (req, res) => {
     const result = await adsRequest({
       method: "PUT",
       path: "/sp/keywords",
-      bodyObj: payload,
+      bodyObj: { keywords: payload },
       version: "v2",
       contentType: "application/vnd.spKeyword.v3+json",
+      acceptType: "application/vnd.spKeyword.v3+json",
     });
 
     res.json({ ok: true, version: VERSION_STAMP, applied: updates.length, ...result });
