@@ -262,8 +262,11 @@ app.put("/ppc/campaigns/budgets", requireApiKey, async (req, res) => {
 
     // Expected body: array of { campaignId, newBudget, reason }
     const updates = req.body;
-    if (!Array.isArray(updates) || updates.length === 0) {
-      return res.status(400).json({ ok: false, error: "Body must be a non-empty array of { campaignId, newBudget, reason }" });
+    if (!Array.isArray(updates)) {
+      return res.status(400).json({ ok: false, error: "Body must be an array of { campaignId, newBudget, reason }" });
+    }
+    if (updates.length === 0) {
+      return res.json({ ok: true, version: VERSION_STAMP, applied: 0, message: "No budget changes this cycle" });
     }
 
     // Safety check — flag any suspiciously large increases
@@ -355,8 +358,11 @@ app.put("/ppc/keywords/bids", requireApiKey, async (req, res) => {
 
     // Expected body: array of { keywordId, currentBid, newBid, acos, reason }
     const updates = req.body;
-    if (!Array.isArray(updates) || updates.length === 0) {
-      return res.status(400).json({ ok: false, error: "Body must be a non-empty array of { keywordId, currentBid, newBid, acos, reason }" });
+    if (!Array.isArray(updates)) {
+      return res.status(400).json({ ok: false, error: "Body must be an array of { keywordId, currentBid, newBid, acos, reason }" });
+    }
+    if (updates.length === 0) {
+      return res.json({ ok: true, version: VERSION_STAMP, applied: 0, message: "No bid changes this cycle" });
     }
 
     // Safety check — reject any bid update on a keyword above target ACoS that increases the bid
@@ -406,8 +412,11 @@ app.post("/ppc/keywords/negatives", requireApiKey, async (req, res) => {
 
     // Expected body: array of { campaignId, adGroupId, keywordText, matchType, reason }
     const negatives = req.body;
-    if (!Array.isArray(negatives) || negatives.length === 0) {
-      return res.status(400).json({ ok: false, error: "Body must be a non-empty array of { campaignId, adGroupId, keywordText, matchType, reason }" });
+    if (!Array.isArray(negatives)) {
+      return res.status(400).json({ ok: false, error: "Body must be an array of { campaignId, adGroupId, keywordText, matchType, reason }" });
+    }
+    if (negatives.length === 0) {
+      return res.json({ ok: true, version: VERSION_STAMP, applied: 0, message: "No negatives to add this cycle" });
     }
 
     const payload = negatives.map(n => ({
