@@ -144,6 +144,11 @@ async function adsRequest({ method, path, bodyObj, version = "v2", noVersion = f
     e.adsApi = json;
     e.adsMethod = method;
     e.adsPath = path;
+    // Capture response headers — Amazon often returns Accept/Allow headers on 415
+    const respHeaders = {};
+    resp.headers.forEach((v, k) => { respHeaders[k] = v; });
+    e.adsHeaders = respHeaders;
+    e.adsRequestHeaders = headers;
     throw e;
   }
 
@@ -372,8 +377,10 @@ app.put("/ppc/keywords/bids", requireApiKey, async (req, res) => {
     const result = await adsRequest({
       method: "PUT",
       path: "/sp/keywords",
-      bodyObj: payload,
+      bodyObj: { keywords: payload.map(p => ({ keywordId: String(p.keywordId), bid: { amount: p.bid, currencyCode: "GBP" }, state: "ENABLED" })) },
       version: "v2",
+      contentType: "application/vnd.spKeyword.v3+json",
+      acceptType: "application/vnd.spKeyword.v3+json",
     });
 
     res.json({ ok: true, version: VERSION_STAMP, applied: updates.length, ...result });
@@ -418,6 +425,7 @@ app.post("/ppc/keywords/negatives", requireApiKey, async (req, res) => {
     res.status(err?.status || 500).json({
       ok: false, version: VERSION_STAMP,
       error: err?.message || String(err), details: err?.adsApi,
+      responseHeaders: err?.adsHeaders, requestHeaders: err?.adsRequestHeaders,
     });
   }
 });
