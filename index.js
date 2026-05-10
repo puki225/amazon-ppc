@@ -377,7 +377,7 @@ app.put("/ppc/keywords/bids", requireApiKey, async (req, res) => {
     const result = await adsRequest({
       method: "PUT",
       path: "/sp/keywords",
-      bodyObj: { keywords: payload.map(p => ({ keywordId: String(p.keywordId), bid: { amount: p.bid, currencyCode: "GBP" }, state: "ENABLED" })) },
+      bodyObj: { keywords: payload.map(p => ({ keywordId: String(p.keywordId), bid: p.bid, state: "ENABLED" })) },
       version: "v2",
       contentType: "application/vnd.spKeyword.v3+json",
       acceptType: "application/vnd.spKeyword.v3+json",
@@ -388,6 +388,7 @@ app.put("/ppc/keywords/bids", requireApiKey, async (req, res) => {
     res.status(err?.status || 500).json({
       ok: false, version: VERSION_STAMP,
       error: err?.message || String(err), details: err?.adsApi,
+      respHeaders: err?.adsHeaders, requestHeaders: err?.adsRequestHeaders,
     });
   }
 });
