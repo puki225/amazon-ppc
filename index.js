@@ -283,7 +283,7 @@ app.put("/ppc/campaigns/budgets", requireApiKey, async (req, res) => {
     const payload = updates.map(u => ({
       campaignId: String(u.campaignId),
       budget: {
-        budgetType: "DAILY_BUDGET",
+        budgetType: "DAILY",
         budget: parseFloat(u.newBudget),
       },
     }));
