@@ -433,8 +433,17 @@ app.post("/ppc/keywords/negatives", requireApiKey, async (req, res) => {
 
     const result = await adsRequest({
       method: "POST",
-      path: "/negativeKeywords",
-      bodyObj: payload,
+      path: "/sp/negativeKeywords",
+      bodyObj: { negativeKeywords: payload.map(n => ({
+        campaignId: String(n.campaignId),
+        adGroupId: String(n.adGroupId),
+        keywordText: n.keywordText,
+        matchType: n.matchType === "negativeExact" ? "NEGATIVE_EXACT" : "NEGATIVE_PHRASE",
+        state: "ENABLED",
+      })) },
+      noVersion: true,
+      contentType: "application/vnd.spNegativeKeyword.v3+json",
+      acceptType: "application/vnd.spNegativeKeyword.v3+json",
     });
 
     res.json({ ok: true, version: VERSION_STAMP, added: negatives.length, ...result });
