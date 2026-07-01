@@ -1,4 +1,6 @@
 import express from "express";
+import pg from "pg";
+const { Pool } = pg;
 
 // =====================
 // APP
@@ -32,11 +34,23 @@ const {
   // Optional proxy auth
   PROXY_API_KEY,
 
+  // Postgres — same instance as the SP-API proxy, for storing ASIN-linked PPC performance
+  DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD,
+
   PORT = "3001",
 } = process.env;
 
 const TARGET_ACOS_NUM = parseFloat(TARGET_ACOS);
 const IS_DRY_RUN = DRY_RUN === "true";
+
+const pool = DB_HOST ? new Pool({
+  host: DB_HOST, port: DB_PORT || 5432, database: DB_NAME,
+  user: DB_USER, password: DB_PASSWORD, ssl: { rejectUnauthorized: false },
+}) : null;
+
+// In-memory job tracker for the async report->postgres sync (mirrors amazon-spapi-proxy's pattern)
+const ppcJobs = new Map();
+let ppcJobCounter = 0;
 
 // =====================
 // HELPERS
@@ -575,6 +589,20 @@ const V3_REPORT_CONFIG = {
       "startDate", "endDate"
     ],
   },
+  // ASIN/SKU-level performance — daily granularity so it lines up with the rest of the
+  // dashboard's date-filtered data. Used to link PPC spend to product P&L (ACOS/ROAS/TACOS).
+  advertisedProduct: {
+    adProduct: "SPONSORED_PRODUCTS",
+    reportTypeId: "spAdvertisedProduct",
+    groupBy: ["advertiser"],
+    timeUnit: "DAILY",
+    columns: [
+      "date", "campaignId", "campaignName", "adGroupId", "adGroupName",
+      "advertisedAsin", "advertisedSku",
+      "impressions", "clicks", "cost",
+      "purchases14d", "sales14d", "unitsSoldClicks14d",
+    ],
+  },
 };
 
 app.post("/ppc/reports/request", requireApiKey, async (req, res) => {
@@ -700,6 +728,179 @@ app.get("/ppc/reports/:reportId/download", requireApiKey, async (req, res) => {
       error: err?.message || String(err), details: err?.adsApi,
     });
   }
+});
+
+// =====================
+// ROUTES — POSTGRES SYNC (ASIN-linked product performance)
+// New surface, separate from the existing /ppc/reports/* routes above (which the
+// "Request PPC Reports" n8n workflow depends on — left untouched on purpose).
+//
+// Flow (all internal to this proxy, driven by one call):
+//   POST /ppc/sync-advertised-products { startDate, endDate }  → returns jobId
+//   GET  /ppc/sync-status/:jobId                               → poll until status = "done"
+// =====================
+
+async function requestV3ReportInternal(reportType, startDateRaw, endDateRaw) {
+  const fmt = d => `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+  const config = V3_REPORT_CONFIG[reportType];
+  if (!config) throw new Error(`Unknown reportType: ${reportType}`);
+
+  const payload = {
+    name: `${reportType}-${startDateRaw}-${endDateRaw}`,
+    startDate: fmt(startDateRaw),
+    endDate: fmt(endDateRaw),
+    configuration: {
+      adProduct: config.adProduct,
+      groupBy: config.groupBy,
+      columns: config.columns,
+      reportTypeId: config.reportTypeId,
+      timeUnit: config.timeUnit || "SUMMARY",
+      format: "GZIP_JSON",
+      ...(config.filters ? { filters: config.filters } : {}),
+    },
+  };
+
+  return adsRequest({
+    method: "POST",
+    path: "/reporting/reports", noVersion: true, contentType: "application/vnd.createasyncreportrequest.v3+json",
+    bodyObj: payload,
+    version: "v2",
+  });
+}
+
+async function getReportStatusInternal(reportId) {
+  return adsRequest({ method: "GET", path: `/reporting/reports/${reportId}`, noVersion: true, version: "v2" });
+}
+
+async function downloadAndDecompressReportInternal(url) {
+  const dlResp = await fetch(url);
+  if (!dlResp.ok) throw new Error(`Failed to download report: ${dlResp.status}`);
+
+  const { createGunzip } = await import('zlib');
+  const buffer = await dlResp.arrayBuffer();
+  const compressed = Buffer.from(buffer);
+
+  const decompressed = await new Promise((resolve, reject) => {
+    const gunzip = createGunzip();
+    const chunks = [];
+    gunzip.on('data', chunk => chunks.push(chunk));
+    gunzip.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    gunzip.on('error', reject);
+    gunzip.end(compressed);
+  });
+
+  return JSON.parse(decompressed);
+}
+
+async function runSyncAdvertisedProducts(jobId, { startDate, endDate }) {
+  ppcJobs.set(jobId, { status: "requesting", startDate, endDate, startedAt: new Date().toISOString() });
+  try {
+    const reqResult = await requestV3ReportInternal("advertisedProduct", startDate, endDate);
+    const reportId = reqResult.json?.reportId;
+    if (!reportId) throw new Error(`No reportId returned from Ads API: ${JSON.stringify(reqResult.json)}`);
+
+    ppcJobs.set(jobId, { status: "polling", reportId, startDate, endDate, startedAt: ppcJobs.get(jobId).startedAt });
+
+    let statusJson = {};
+    let attempts = 0;
+    const maxAttempts = 40; // 40 * 15s ≈ 10 minutes
+    do {
+      await new Promise(r => setTimeout(r, 15000));
+      const statusResult = await getReportStatusInternal(reportId);
+      statusJson = statusResult.json || {};
+      attempts++;
+      ppcJobs.set(jobId, { status: "polling", reportId, attempts, reportStatus: statusJson.status, startDate, endDate, startedAt: ppcJobs.get(jobId).startedAt });
+    } while (statusJson.status !== "COMPLETED" && statusJson.status !== "FAILED" && attempts < maxAttempts);
+
+    if (statusJson.status === "FAILED") throw new Error(`Ads report failed: ${JSON.stringify(statusJson)}`);
+    if (statusJson.status !== "COMPLETED") throw new Error(`Report did not complete after ${attempts} polls (last status: ${statusJson.status})`);
+
+    const rows = await downloadAndDecompressReportInternal(statusJson.url);
+
+    let upserted = 0;
+    for (const row of rows) {
+      await pool.query(`
+        INSERT INTO amazon_ppc_product_performance
+          (report_date, campaign_id, campaign_name, ad_group_id, ad_group_name, asin, sku, impressions, clicks, cost, purchases_14d, sales_14d, units_sold_clicks_14d, synced_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+        ON CONFLICT (report_date, campaign_id, ad_group_id, asin) DO UPDATE SET
+          campaign_name = EXCLUDED.campaign_name,
+          ad_group_name = EXCLUDED.ad_group_name,
+          sku = EXCLUDED.sku,
+          impressions = EXCLUDED.impressions,
+          clicks = EXCLUDED.clicks,
+          cost = EXCLUDED.cost,
+          purchases_14d = EXCLUDED.purchases_14d,
+          sales_14d = EXCLUDED.sales_14d,
+          units_sold_clicks_14d = EXCLUDED.units_sold_clicks_14d,
+          synced_at = NOW()
+      `, [
+        row.date,
+        String(row.campaignId ?? ""),
+        row.campaignName || null,
+        String(row.adGroupId ?? ""),
+        row.adGroupName || null,
+        row.advertisedAsin || null,
+        row.advertisedSku || null,
+        parseInt(row.impressions || 0, 10),
+        parseInt(row.clicks || 0, 10),
+        parseFloat(row.cost || 0),
+        parseInt(row.purchases14d || 0, 10),
+        parseFloat(row.sales14d || 0),
+        parseInt(row.unitsSoldClicks14d || 0, 10),
+      ]);
+      upserted++;
+    }
+
+    ppcJobs.set(jobId, { status: "done", reportId, rowCount: rows.length, upserted, startDate, endDate, startedAt: ppcJobs.get(jobId).startedAt, completedAt: new Date().toISOString() });
+  } catch (err) {
+    ppcJobs.set(jobId, { status: "error", error: err.message, startDate, endDate, startedAt: ppcJobs.get(jobId)?.startedAt });
+  }
+}
+
+app.post("/ppc/sync-advertised-products", requireApiKey, (req, res) => {
+  if (!pool) return res.status(500).json({ ok: false, error: "Postgres not configured — set DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD env vars on this service" });
+  const { startDate, endDate } = req.body || {};
+  if (!startDate || !endDate) return res.status(400).json({ ok: false, error: "startDate and endDate required (YYYYMMDD)" });
+  const jobId = String(++ppcJobCounter);
+  runSyncAdvertisedProducts(jobId, { startDate, endDate });
+  res.json({ ok: true, version: VERSION_STAMP, status: "started", jobId });
+});
+
+app.get("/ppc/sync-status/:jobId", requireApiKey, (req, res) => {
+  const job = ppcJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
+  res.json({ ok: true, version: VERSION_STAMP, ...job });
+});
+
+app.post("/setup-db", requireApiKey, async (req, res) => {
+  if (!pool) return res.status(500).json({ ok: false, error: "Postgres not configured — set DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD env vars on this service" });
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS amazon_ppc_product_performance (
+        id SERIAL PRIMARY KEY,
+        report_date DATE NOT NULL,
+        campaign_id TEXT,
+        campaign_name TEXT,
+        ad_group_id TEXT,
+        ad_group_name TEXT,
+        asin TEXT,
+        sku TEXT,
+        impressions INT DEFAULT 0,
+        clicks INT DEFAULT 0,
+        cost NUMERIC(12,2) DEFAULT 0,
+        purchases_14d INT DEFAULT 0,
+        sales_14d NUMERIC(12,2) DEFAULT 0,
+        units_sold_clicks_14d INT DEFAULT 0,
+        synced_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (report_date, campaign_id, ad_group_id, asin)
+      );
+      CREATE INDEX IF NOT EXISTS idx_ppc_perf_asin ON amazon_ppc_product_performance(asin);
+      CREATE INDEX IF NOT EXISTS idx_ppc_perf_sku ON amazon_ppc_product_performance(sku);
+      CREATE INDEX IF NOT EXISTS idx_ppc_perf_date ON amazon_ppc_product_performance(report_date);
+    `);
+    res.json({ ok: true, message: "Table created" });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // =====================
