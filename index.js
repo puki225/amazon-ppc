@@ -854,7 +854,16 @@ async function runSyncAdvertisedProducts(jobId, { startDate, endDate }) {
 
     ppcJobs.set(jobId, { status: "done", reportId, rowCount: rows.length, upserted, startDate, endDate, startedAt: ppcJobs.get(jobId).startedAt, completedAt: new Date().toISOString() });
   } catch (err) {
-    ppcJobs.set(jobId, { status: "error", error: err.message, startDate, endDate, startedAt: ppcJobs.get(jobId)?.startedAt });
+    // Surface Amazon's actual rejection reason (err.adsApi), not just "Ads API error 400" —
+    // needed to tell apart date-range-too-wide, retention-window-exceeded, throttling, etc.
+    ppcJobs.set(jobId, {
+      status: "error",
+      error: err.message,
+      details: err.adsApi || err.details || null,
+      httpStatus: err.status || null,
+      startDate, endDate,
+      startedAt: ppcJobs.get(jobId)?.startedAt,
+    });
   }
 }
 
