@@ -817,16 +817,55 @@ async function runSyncAdvertisedProducts(jobId, { startDate, endDate }) {
 
     const rows = await downloadAndDecompressReportInternal(statusJson.url);
 
-    let upserted = 0;
+    // Amazon's report returns one row per (date, campaign, ad group, ASIN), but the live
+    // table's actual unique index is ux_ppc_sku_report_date on (sku, report_date) — one row
+    // per SKU per day, regardless of campaign (added directly against the DB at some point;
+    // not reflected in the UNIQUE constraint in /setup-db below). ~80% of SKU-days span
+    // multiple simultaneous campaigns (manual + automatic targeting the same product), so
+    // inserting per-campaign rows against that index fails with "duplicate key value
+    // violates unique constraint ux_ppc_sku_report_date" the first time a synced window
+    // includes such a day — which is exactly what broke the daily sync on 2026-07-05.
+    // Aggregate by (sku, date) first, summing metrics across campaigns, and only keep
+    // campaign_id/campaign_name/ad_group_id/ad_group_name when a single campaign covers
+    // that sku+date (else null, since no single value would be accurate).
+    const grouped = new Map();
     for (const row of rows) {
+      const sku = row.advertisedSku || "";
+      const key = `${sku}::${row.date}`;
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          date: row.date, sku, asin: row.advertisedAsin || null,
+          campaignIds: new Set(), campaignNames: new Set(), adGroupIds: new Set(), adGroupNames: new Set(),
+          impressions: 0, clicks: 0, cost: 0, purchases14d: 0, sales14d: 0, unitsSoldClicks14d: 0,
+        });
+      }
+      const g = grouped.get(key);
+      if (row.advertisedAsin) g.asin = row.advertisedAsin;
+      g.campaignIds.add(String(row.campaignId ?? ""));
+      g.campaignNames.add(row.campaignName || "");
+      g.adGroupIds.add(String(row.adGroupId ?? ""));
+      g.adGroupNames.add(row.adGroupName || "");
+      g.impressions += parseInt(row.impressions || 0, 10);
+      g.clicks += parseInt(row.clicks || 0, 10);
+      g.cost += parseFloat(row.cost || 0);
+      g.purchases14d += parseInt(row.purchases14d || 0, 10);
+      g.sales14d += parseFloat(row.sales14d || 0);
+      g.unitsSoldClicks14d += parseInt(row.unitsSoldClicks14d || 0, 10);
+    }
+
+    let upserted = 0;
+    for (const g of grouped.values()) {
+      const singleCampaign = g.campaignIds.size === 1;
       await pool.query(`
         INSERT INTO amazon_ppc_product_performance
           (report_date, campaign_id, campaign_name, ad_group_id, ad_group_name, asin, sku, impressions, clicks, cost, purchases_14d, sales_14d, units_sold_clicks_14d, synced_at)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
-        ON CONFLICT (report_date, campaign_id, ad_group_id, asin) DO UPDATE SET
+        ON CONFLICT (sku, report_date) DO UPDATE SET
+          campaign_id = EXCLUDED.campaign_id,
           campaign_name = EXCLUDED.campaign_name,
+          ad_group_id = EXCLUDED.ad_group_id,
           ad_group_name = EXCLUDED.ad_group_name,
-          sku = EXCLUDED.sku,
+          asin = EXCLUDED.asin,
           impressions = EXCLUDED.impressions,
           clicks = EXCLUDED.clicks,
           cost = EXCLUDED.cost,
@@ -835,19 +874,19 @@ async function runSyncAdvertisedProducts(jobId, { startDate, endDate }) {
           units_sold_clicks_14d = EXCLUDED.units_sold_clicks_14d,
           synced_at = NOW()
       `, [
-        row.date,
-        String(row.campaignId ?? ""),
-        row.campaignName || null,
-        String(row.adGroupId ?? ""),
-        row.adGroupName || null,
-        row.advertisedAsin || null,
-        row.advertisedSku || null,
-        parseInt(row.impressions || 0, 10),
-        parseInt(row.clicks || 0, 10),
-        parseFloat(row.cost || 0),
-        parseInt(row.purchases14d || 0, 10),
-        parseFloat(row.sales14d || 0),
-        parseInt(row.unitsSoldClicks14d || 0, 10),
+        g.date,
+        singleCampaign ? [...g.campaignIds][0] : null,
+        singleCampaign ? [...g.campaignNames][0] : null,
+        singleCampaign ? [...g.adGroupIds][0] : null,
+        singleCampaign ? [...g.adGroupNames][0] : null,
+        g.asin,
+        g.sku || null,
+        g.impressions,
+        g.clicks,
+        g.cost,
+        g.purchases14d,
+        g.sales14d,
+        g.unitsSoldClicks14d,
       ]);
       upserted++;
     }
